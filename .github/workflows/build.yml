@@ -26,6 +26,7 @@ jobs:
         shell: msys2 {0}
         run: |
           mingw32-make test-build
+
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
