@@ -685,7 +685,11 @@ VOID WINAPI ServiceCtrlHandler(DWORD dwCtrl) {
 }
 
 // Service main function
-VOID WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
+// Service entry point uses wide-character arguments to match the
+// `StartServiceCtrlDispatcherW` call that registers it. Using `LPWSTR`
+// prevents an invalid conversion warning when constructing the
+// `SERVICE_TABLE_ENTRYW` structure during compilation.
+VOID WINAPI ServiceMain(DWORD argc, LPWSTR *argv) {
     // Register service control handler
     g_StatusHandle = RegisterServiceCtrlHandlerW(SERVICE_NAME, ServiceCtrlHandler);
     if (g_StatusHandle == nullptr) {
