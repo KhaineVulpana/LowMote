@@ -3,10 +3,10 @@ name: Build
 on:
   push:
     branches:
-      - main
+      - master
       - develop
   pull_request:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
 
 jobs:
@@ -25,9 +25,7 @@ jobs:
       - name: Build with MinGW
         shell: msys2 {0}
         run: |
-          g++ -std=c++17 -O2 -DWIN32_LEAN_AND_MEAN client.cpp -o client.exe -lws2_32 -ld3d11 -ldxgi -lntdll -lgdi32 -luser32 -static
-          g++ -std=c++17 -O2 -DWIN32_LEAN_AND_MEAN server.cpp -o server.exe -lws2_32 -lgdi32 -luser32 -static
-
+          mingw32-make test-build
       - name: Upload Windows artifacts
         uses: actions/upload-artifact@v4
         with:
