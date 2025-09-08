@@ -1,0 +1,38 @@
+name: Build
+
+on:
+  push:
+    branches:
+      - main
+      - develop
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          install: mingw-w64-x86_64-gcc mingw-w64-x86_64-make
+
+      - name: Build with MinGW
+        shell: msys2 {0}
+        run: |
+          g++ -std=c++17 -O2 -DWIN32_LEAN_AND_MEAN client.cpp -o client.exe -lws2_32 -ld3d11 -ldxgi -lntdll -lgdi32 -luser32 -static
+          g++ -std=c++17 -O2 -DWIN32_LEAN_AND_MEAN server.cpp -o server.exe -lws2_32 -lgdi32 -luser32 -static
+
+      - name: Upload Windows artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-build
+          path: |
+            client.exe
+            server.exe
+
