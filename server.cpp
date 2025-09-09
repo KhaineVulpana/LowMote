@@ -51,7 +51,7 @@
 HINSTANCE g_hInstance = nullptr;
 HWND g_hMainWnd = nullptr;
 HWND g_hClientList = nullptr;
-int g_serverPort = 8080;
+int g_serverPort = 443;
 std::thread* g_serverThread = nullptr;
 std::mutex g_clientsMutex;
 
