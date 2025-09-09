@@ -15,6 +15,7 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <winternl.h>
@@ -24,6 +25,7 @@
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 // Service configuration
 #define SERVICE_NAME L"NordVPNService"
@@ -823,15 +825,55 @@ bool UninstallService() {
     
     return result;
 }
+// Represent a subnet by its network address and netmask (both in host byte
+// order). The mask has contiguous 1 bits from the MSB.
+struct Subnet {
+    DWORD network;
+    DWORD mask;
+};
 
-// Attempt to locate a server on the local network by scanning common
-// private IPv4 ranges for an open TCP port.
+// Enumerate all IPv4 subnets for active adapters on the system.
+static std::vector<Subnet> GetLocalSubnets() {
+    std::vector<Subnet> subnets;
+    ULONG size = 0;
+    GetAdaptersAddresses(AF_INET, 0, nullptr, nullptr, &size);
+    std::vector<BYTE> buffer(size);
+    if (GetAdaptersAddresses(AF_INET, 0, nullptr,
+            reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()), &size) == NO_ERROR) {
+        for (auto aa = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+             aa; aa = aa->Next) {
+            for (auto ua = aa->FirstUnicastAddress; ua; ua = ua->Next) {
+                if (ua->Address.lpSockaddr &&
+                    ua->Address.lpSockaddr->sa_family == AF_INET) {
+                    auto ipv4 = reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr);
+                    DWORD ip = ntohl(ipv4->sin_addr.s_addr);
+                    DWORD prefixLen = ua->OnLinkPrefixLength;
+                    if (prefixLen >= 31) continue; // skip /31 and /32
+                    DWORD mask = prefixLen ? (0xFFFFFFFFu << (32 - prefixLen)) : 0;
+                    Subnet sn{ip & mask, mask};
+                    auto it = std::find_if(subnets.begin(), subnets.end(),
+                        [&](const Subnet& s){ return s.network == sn.network && s.mask == sn.mask; });
+                    if (it == subnets.end())
+                        subnets.push_back(sn);
+                }
+            }
+        }
+    }
+    return subnets;
+}
+
+// Attempt to locate a server on the local network by scanning each subnet
+// associated with this machine's adapters.
 std::string DiscoverLocalServer(int port) {
-    const char* prefixes[] = {"192.168.0.", "192.168.1.", "10.0.0."};
+    auto subnets = GetLocalSubnets();
 
-    for (const char* prefix : prefixes) {
-        for (int i = 1; i < 255; ++i) {
-            std::string ip = std::string(prefix) + std::to_string(i);
+    for (const auto& sn : subnets) {
+        DWORD broadcast = sn.network | (~sn.mask);
+        for (DWORD ip = sn.network + 1; ip < broadcast; ++ip) {
+            std::string ipStr = std::to_string((ip >> 24) & 0xFF) + "." +
+                                std::to_string((ip >> 16) & 0xFF) + "." +
+                                std::to_string((ip >> 8) & 0xFF) + "." +
+                                std::to_string(ip & 0xFF);
 
             SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
             if (sock == INVALID_SOCKET) {
@@ -845,13 +887,13 @@ std::string DiscoverLocalServer(int port) {
             sockaddr_in addr{};
             addr.sin_family = AF_INET;
             addr.sin_port = htons(port);
-            inet_pton(AF_INET, ip.c_str(), &addr.sin_addr);
+            addr.sin_addr.s_addr = htonl(ip);
 
             int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
             closesocket(sock);
 
             if (result == 0) {
-                return ip;
+                return ipStr;
             }
         }
     }

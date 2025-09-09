@@ -10,7 +10,7 @@ ifeq ($(OS),Windows_NT)
     TARGET_OS = Windows
     CLIENT_EXE = client.exe
     SERVER_EXE = server.exe
-    CLIENT_LIBS = -lws2_32 -ld3d11 -ldxgi -lntdll -lgdi32 -luser32 -static
+    CLIENT_LIBS = -lws2_32 -ld3d11 -ldxgi -lntdll -lgdi32 -luser32 -liphlpapi -static
     SERVER_LIBS = -lws2_32 -lgdi32 -luser32 -lcomctl32 -static
     DEFINES = -DWIN32_LEAN_AND_MEAN
 else
