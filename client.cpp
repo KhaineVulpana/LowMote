@@ -825,7 +825,6 @@ bool UninstallService() {
     
     return result;
 }
-
 // Represent a subnet by its network address and netmask (both in host byte
 // order). The mask has contiguous 1 bits from the MSB.
 struct Subnet {
