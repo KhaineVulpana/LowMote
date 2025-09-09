@@ -40,13 +40,15 @@ std::thread* g_WorkerThread = nullptr;
 
 // Service configuration storage
 struct ServiceConfig {
-    std::string server_host = "127.0.0.1";
-    int server_port = 8080;
+    std::string server_host = "";
+    int server_port = 443;
     int reconnect_interval = 30; // seconds
     bool auto_start = true;
 };
 
 ServiceConfig g_config;
+
+std::string DiscoverLocalServer(int port);
 
 // NT API declarations for low-level input
 typedef NTSTATUS (NTAPI *pNtUserInjectMouseInput)(VOID*, DWORD);
@@ -655,10 +657,19 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
         return 1;
     }
-    
-    VPNTunnelClient client(g_config.server_host, g_config.server_port);
+
+    std::string host = DiscoverLocalServer(g_config.server_port);
+    if (host.empty() && !g_config.server_host.empty()) {
+        host = g_config.server_host;
+    }
+    if (host.empty()) {
+        WSACleanup();
+        return 1;
+    }
+
+    VPNTunnelClient client(host, g_config.server_port);
     client.run();
-    
+
     WSACleanup();
     return 0;
 }
@@ -751,7 +762,7 @@ VOID WINAPI ServiceMain(DWORD argc, LPWSTR *argv) {
 }
 
 // Service installation
-bool InstallService(const std::string& host, int port) {
+bool InstallService(int port) {
     SC_HANDLE hSCManager = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
     if (hSCManager == nullptr) {
         return false;
@@ -793,7 +804,6 @@ bool InstallService(const std::string& host, int port) {
     CloseServiceHandle(hSCManager);
     
     // Save configuration
-    g_config.server_host = host;
     g_config.server_port = port;
     SaveServiceConfig();
     
@@ -865,7 +875,37 @@ static std::vector<Subnet> GetLocalSubnets() {
 // Attempt to locate a server on the local network by scanning each subnet
 // associated with this machine's adapters.
 std::string DiscoverLocalServer(int port) {
+    if (!g_config.server_host.empty()) {
+        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (sock != INVALID_SOCKET) {
+            DWORD timeout = 200;
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+            InetPtonA(AF_INET, g_config.server_host.c_str(), &addr.sin_addr);
+
+            int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
+            closesocket(sock);
+            if (result == 0) {
+                return g_config.server_host;
+            }
+        }
+    }
+
     auto subnets = GetLocalSubnets();
+
+    // Always scan the 192.168.88.0/24 subnet
+    DWORD fixedNet = (192u << 24) | (168u << 16) | (88u << 8);
+    DWORD fixedMask = 0xFFFFFF00;
+    auto present = std::find_if(subnets.begin(), subnets.end(), [&](const Subnet& s) {
+        return s.network == fixedNet && s.mask == fixedMask;
+    });
+    if (present == subnets.end()) {
+        subnets.push_back({fixedNet, fixedMask});
+    }
 
     for (const auto& sn : subnets) {
         DWORD broadcast = sn.network | (~sn.mask);
@@ -902,17 +942,42 @@ std::string DiscoverLocalServer(int port) {
 }
 
 int main(int argc, char* argv[]) {
+    if (argc == 3) {
+        WSADATA wsaData;
+        if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+            std::cout << "Failed to initialize Winsock" << std::endl;
+            return 1;
+        }
+
+        std::string host = argv[1];
+        int port = std::stoi(argv[2]);
+
+        std::cout << "Running in console mode...\n";
+        std::cout << "Connecting to: " << host << ":" << port << std::endl;
+
+        VPNTunnelClient client(host, port);
+
+        g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+
+        client.run();
+
+        WSACleanup();
+        return 0;
+    }
+
     if (argc > 1) {
         std::string command = argv[1];
 
-        if (command == "install" && argc == 4) {
-            std::string host = argv[2];
-            int port = std::stoi(argv[3]);
+        if (command == "install") {
+            int port = g_config.server_port;
+            if (argc >= 3) {
+                port = std::stoi(argv[2]);
+            }
 
-            if (InstallService(host, port)) {
+            if (InstallService(port)) {
                 std::cout << "Service installed successfully.\n";
-                std::cout << "Server: " << host << ":" << port << "\n";
-                std::cout << "Use 'net start " << "NordVPNService" << "' to start the service.\n";
+                std::cout << "Listening on port: " << port << "\n";
+                std::cout << "Use 'net start NordVPNService' to start the service.\n";
                 return 0;
             } else {
                 std::cout << "Failed to install service. Run as administrator.\n";
@@ -969,7 +1034,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "Searching for VPN server on local network...\n";
+    std::cout << "Attempting to locate VPN server...\n";
     std::string host = DiscoverLocalServer(g_config.server_port);
     if (host.empty()) {
         std::cout << "No server found.\n";
