@@ -23,7 +23,10 @@
 #include <mutex>
 #include <sstream>
 
-#define WIN32_LEAN_AND_MEAN
+#ifndef DEBUG_LOG
+#define DEBUG_LOG(msg) std::cerr << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl
+#endif
+
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -655,34 +658,40 @@ void sendHttpResponse(SOCKET client_socket, int status_code, const char* content
 
 // Server worker thread
 void ServerWorkerThread() {
+    DEBUG_LOG("Server worker starting on port " << g_serverPort);
     WSADATA wsaData;
     if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        DEBUG_LOG("WSAStartup failed");
         return;
     }
-    
+
     SOCKET server_socket = socket(AF_INET, SOCK_STREAM, 0);
     if (server_socket == INVALID_SOCKET) {
+        DEBUG_LOG("socket() failed");
         WSACleanup();
         return;
     }
-    
+
     sockaddr_in server_addr = {0};
     server_addr.sin_family = AF_INET;
     server_addr.sin_addr.s_addr = INADDR_ANY;
     server_addr.sin_port = htons((u_short)g_serverPort);
-    
+
     if (bind(server_socket, (sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
+        DEBUG_LOG("bind() failed");
         closesocket(server_socket);
         WSACleanup();
         return;
     }
-    
+
     if (listen(server_socket, 5) == SOCKET_ERROR) {
+        DEBUG_LOG("listen() failed");
         closesocket(server_socket);
         WSACleanup();
         return;
     }
-    
+
+    DEBUG_LOG("Server listening");
     char status[256];
     sprintf_s(status, sizeof(status), "VPN Tunnel Server - Listening on port %d", g_serverPort);
     SetWindowTextA(g_hMainWnd, status);
@@ -692,29 +701,34 @@ void ServerWorkerThread() {
         int client_addr_len = sizeof(client_addr);
         
         SOCKET client_socket = accept(server_socket, (sockaddr*)&client_addr, &client_addr_len);
-        if (client_socket == INVALID_SOCKET) break;
-        
+        if (client_socket == INVALID_SOCKET) {
+            DEBUG_LOG("accept() failed");
+            break;
+        }
+
         // Handle request in separate thread
         std::thread([client_socket, client_addr]() {
             char client_ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-            
+            DEBUG_LOG("Connection from " << client_ip);
+
             char buffer[8192];
             int bytes_received = recv(client_socket, buffer, sizeof(buffer) - 1, 0);
-            
+
             if (bytes_received > 0) {
                 buffer[bytes_received] = '\0';
-                
+
                 char method[16], path[256], version[16];
-                if (sscanf_s(buffer, "%15s %255s %15s", method, sizeof(method), 
+                if (sscanf_s(buffer, "%15s %255s %15s", method, sizeof(method),
                            path, sizeof(path), version, sizeof(version)) == 3) {
-                    
+                    DEBUG_LOG("Request: " << method << " " << path);
+
                     if (strcmp(method, "GET") == 0 && strcmp(path, "/vpn/auth") == 0) {
                         // Generate session for new tunnel
                         char session_id[33];
                         generateSessionKey(session_id, sizeof(session_id));
                         session_id[16] = '\0';
-                        
+
                         std::lock_guard<std::mutex> lock(g_clientsMutex);
                         ClientSession& client = g_clients[session_id];
                         client.id = session_id;
@@ -725,43 +739,45 @@ void ServerWorkerThread() {
                         client.height = 0;
                         client.viewer_window = nullptr;
                         client.is_connected = false;
-                        
+
                         char response_body[256];
-                        sprintf_s(response_body, sizeof(response_body), 
+                        sprintf_s(response_body, sizeof(response_body),
                                  "{\"session\":\"%s\",\"status\":\"authenticated\"}", session_id);
                         sendHttpResponse(client_socket, 200, "application/json", response_body);
-                        
+                        DEBUG_LOG("Authenticated new session " << session_id);
+
                         // Update client list in UI
                         PostMessage(g_hMainWnd, WM_UPDATE_CLIENT_LIST, 0, 0);
-                        
+
                     } else if (strcmp(method, "POST") == 0 && strncmp(path, "/vpn/tunnel/", 12) == 0) {
                         // Handle screen data transmission
                         char session_id[64];
                         strcpy_s(session_id, sizeof(session_id), path + 12);
-                        
+                        DEBUG_LOG("Screen data from session " << session_id);
+
                         const char* body_start = strstr(buffer, "\r\n\r\n");
                         if (body_start) {
                             body_start += 4;
                             int body_len = bytes_received - (body_start - buffer);
-                            
+
                             char tunnel_data[4096];
                             int tunnel_len = extractTunnelData(body_start, body_len, tunnel_data, sizeof(tunnel_data));
-                            
+
                             if (tunnel_len > 0) {
                                 int width = parseInteger(tunnel_data, "\"width\":");
                                 int height = parseInteger(tunnel_data, "\"height\":");
-                                
+
                                 char encoded_data[2048];
                                 if (extractJsonString(tunnel_data, "data", encoded_data, sizeof(encoded_data)) > 0) {
                                     char decoded[4096];
-                                    int decoded_len = DataEncoder::decode(encoded_data, strlen(encoded_data), 
+                                    int decoded_len = DataEncoder::decode(encoded_data, strlen(encoded_data),
                                                                         decoded, sizeof(decoded));
-                                    
+
                                     if (decoded_len > 0) {
                                         std::vector<BYTE> screen_data(width * height * 3);
-                                        int screen_len = decompressRLE(decoded, decoded_len, 
+                                        int screen_len = decompressRLE(decoded, decoded_len,
                                                                      (char*)screen_data.data(), screen_data.size());
-                                        
+
                                         std::lock_guard<std::mutex> lock(g_clientsMutex);
                                         auto it = g_clients.find(session_id);
                                         if (it != g_clients.end()) {
@@ -770,7 +786,7 @@ void ServerWorkerThread() {
                                             client.height = height;
                                             client.screen_buffer = screen_data;
                                             GetSystemTimeAsFileTime(&client.last_seen);
-                                            
+
                                             // Update viewer window if open
                                             if (client.viewer_window && IsWindow(client.viewer_window)) {
                                                 ViewerWindowData* data = (ViewerWindowData*)GetWindowLongPtr(
@@ -790,52 +806,54 @@ void ServerWorkerThread() {
                                 }
                             }
                         }
-                        
+
                         sendHttpResponse(client_socket, 200, "text/plain", "OK");
-                        
+
                     } else if (strcmp(method, "GET") == 0 && strncmp(path, "/vpn/control/", 13) == 0) {
                         // Handle input command requests
                         char session_id[64];
                         strcpy_s(session_id, sizeof(session_id), path + 13);
-                        
+                        DEBUG_LOG("Input request for session " << session_id);
+
                         std::lock_guard<std::mutex> lock(g_clientsMutex);
                         auto it = g_clients.find(session_id);
                         if (it != g_clients.end() && !it->second.pending_inputs.empty()) {
                             std::string input_cmd = it->second.pending_inputs.front();
                             it->second.pending_inputs.erase(it->second.pending_inputs.begin());
-                            
+
                             char encoded_cmd[256];
-                            DataEncoder::encode(input_cmd.c_str(), input_cmd.length(), 
+                            DataEncoder::encode(input_cmd.c_str(), input_cmd.length(),
                                               encoded_cmd, sizeof(encoded_cmd));
-                            
+
                             char response_body[512];
                             sprintf_s(response_body, sizeof(response_body), "{\"input\":\"%s\"}", encoded_cmd);
                             sendHttpResponse(client_socket, 200, "application/json", response_body);
+                            DEBUG_LOG("Sent queued input command");
                         } else {
                             sendHttpResponse(client_socket, 200, "application/json", "{}");
                         }
-                        
+
                     } else {
+                        DEBUG_LOG("Unhandled path: " << path);
                         sendHttpResponse(client_socket, 404, "text/plain", "Not Found");
                     }
                 }
             }
-            
+
             closesocket(client_socket);
         }).detach();
     }
-    
+
     closesocket(server_socket);
     WSACleanup();
+    DEBUG_LOG("Server worker exiting");
 }
 
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     g_hInstance = hInstance;
-    
-    // Parse command line for port
-    if (strlen(lpCmdLine) > 0) {
-        g_serverPort = atoi(lpCmdLine);
-    }
+
+    // Always use default HTTPS port unless modified in source
+    DEBUG_LOG("WinMain starting with port " << g_serverPort);
     
     // Register main window class
     WNDCLASSW wc = {0};
@@ -878,9 +896,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     
     ShowWindow(g_hMainWnd, nCmdShow);
     UpdateWindow(g_hMainWnd);
-    
+
     // Start server thread
     g_serverThread = new std::thread(ServerWorkerThread);
+    DEBUG_LOG("Server thread launched");
     
     // Message loop
     MSG msg;
