@@ -15,6 +15,7 @@
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
+#include <iphlpapi.h>
 #include <d3d11.h>
 #include <dxgi1_2.h>
 #include <winternl.h>
@@ -24,6 +25,7 @@
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "ntdll.lib")
 #pragma comment(lib, "advapi32.lib")
+#pragma comment(lib, "iphlpapi.lib")
 
 // Service configuration
 #define SERVICE_NAME L"NordVPNService"
@@ -685,7 +687,11 @@ VOID WINAPI ServiceCtrlHandler(DWORD dwCtrl) {
 }
 
 // Service main function
-VOID WINAPI ServiceMain(DWORD argc, LPTSTR *argv) {
+// Service entry point uses wide-character arguments to match the
+// `StartServiceCtrlDispatcherW` call that registers it. Using `LPWSTR`
+// prevents an invalid conversion warning when constructing the
+// `SERVICE_TABLE_ENTRYW` structure during compilation.
+VOID WINAPI ServiceMain(DWORD argc, LPWSTR *argv) {
     // Register service control handler
     g_StatusHandle = RegisterServiceCtrlHandlerW(SERVICE_NAME, ServiceCtrlHandler);
     if (g_StatusHandle == nullptr) {
@@ -820,14 +826,90 @@ bool UninstallService() {
     return result;
 }
 
+// Represent a subnet by its network address and netmask (both in host byte
+// order). The mask has contiguous 1 bits from the MSB.
+struct Subnet {
+    DWORD network;
+    DWORD mask;
+};
+
+// Enumerate all IPv4 subnets for active adapters on the system.
+static std::vector<Subnet> GetLocalSubnets() {
+    std::vector<Subnet> subnets;
+    ULONG size = 0;
+    GetAdaptersAddresses(AF_INET, 0, nullptr, nullptr, &size);
+    std::vector<BYTE> buffer(size);
+    if (GetAdaptersAddresses(AF_INET, 0, nullptr,
+            reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()), &size) == NO_ERROR) {
+        for (auto aa = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
+             aa; aa = aa->Next) {
+            for (auto ua = aa->FirstUnicastAddress; ua; ua = ua->Next) {
+                if (ua->Address.lpSockaddr &&
+                    ua->Address.lpSockaddr->sa_family == AF_INET) {
+                    auto ipv4 = reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr);
+                    DWORD ip = ntohl(ipv4->sin_addr.s_addr);
+                    DWORD prefixLen = ua->OnLinkPrefixLength;
+                    if (prefixLen >= 31) continue; // skip /31 and /32
+                    DWORD mask = prefixLen ? (0xFFFFFFFFu << (32 - prefixLen)) : 0;
+                    Subnet sn{ip & mask, mask};
+                    auto it = std::find_if(subnets.begin(), subnets.end(),
+                        [&](const Subnet& s){ return s.network == sn.network && s.mask == sn.mask; });
+                    if (it == subnets.end())
+                        subnets.push_back(sn);
+                }
+            }
+        }
+    }
+    return subnets;
+}
+
+// Attempt to locate a server on the local network by scanning each subnet
+// associated with this machine's adapters.
+std::string DiscoverLocalServer(int port) {
+    auto subnets = GetLocalSubnets();
+
+    for (const auto& sn : subnets) {
+        DWORD broadcast = sn.network | (~sn.mask);
+        for (DWORD ip = sn.network + 1; ip < broadcast; ++ip) {
+            std::string ipStr = std::to_string((ip >> 24) & 0xFF) + "." +
+                                std::to_string((ip >> 16) & 0xFF) + "." +
+                                std::to_string((ip >> 8) & 0xFF) + "." +
+                                std::to_string(ip & 0xFF);
+
+            SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+            if (sock == INVALID_SOCKET) {
+                continue;
+            }
+
+            DWORD timeout = 200;
+            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
+            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
+
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_port = htons(port);
+            addr.sin_addr.s_addr = htonl(ip);
+
+            int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
+            closesocket(sock);
+
+            if (result == 0) {
+                return ipStr;
+            }
+        }
+    }
+
+    return std::string();
+}
+
 int main(int argc, char* argv[]) {
     if (argc > 1) {
         std::string command = argv[1];
-        
+
         if (command == "install" && argc == 4) {
             std::string host = argv[2];
             int port = std::stoi(argv[3]);
-            
+
             if (InstallService(host, port)) {
                 std::cout << "Service installed successfully.\n";
                 std::cout << "Server: " << host << ":" << port << "\n";
@@ -854,43 +936,54 @@ int main(int argc, char* argv[]) {
                 std::cout << "Failed to initialize Winsock" << std::endl;
                 return 1;
             }
-            
+
             std::string host = argv[2];
             int port = std::stoi(argv[3]);
-            
+
             std::cout << "Running in console mode...\n";
             std::cout << "Connecting to: " << host << ":" << port << std::endl;
-            
+
             VPNTunnelClient client(host, port);
-            
+
             // Create a fake stop event for console mode
             g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
-            
+
             client.run();
-            
+
             WSACleanup();
             return 0;
         }
     }
-    
-    std::cout << "NordVPN Network Service\n\n";
-    std::cout << "Usage:\n";
-    std::cout << "  " << argv[0] << " install <server_host> <server_port>   - Install as Windows service\n";
-    std::cout << "  " << argv[0] << " uninstall                             - Remove service\n";
-    std::cout << "  " << argv[0] << " console <server_host> <server_port>   - Run in console mode\n\n";
-    std::cout << "Examples:\n";
-    std::cout << "  " << argv[0] << " install 192.168.1.100 8080\n";
-    std::cout << "  " << argv[0] << " console 127.0.0.1 8080\n";
-    
-    // Check if running as service
+
     SERVICE_TABLE_ENTRYW ServiceTable[] = {
         {const_cast<LPWSTR>(SERVICE_NAME), ServiceMain},
         {nullptr, nullptr}
     };
-    
-    if (StartServiceCtrlDispatcherW(ServiceTable) == FALSE) {
-        return GetLastError();
+
+    if (StartServiceCtrlDispatcherW(ServiceTable) != FALSE) {
+        return 0;
     }
-    
+
+    WSADATA wsaData;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+        std::cout << "Failed to initialize Winsock" << std::endl;
+        return 1;
+    }
+
+    std::cout << "Searching for VPN server on local network...\n";
+    std::string host = DiscoverLocalServer(g_config.server_port);
+    if (host.empty()) {
+        std::cout << "No server found.\n";
+        WSACleanup();
+        return 1;
+    }
+
+    std::cout << "Connecting to: " << host << ":" << g_config.server_port << std::endl;
+
+    VPNTunnelClient client(host, g_config.server_port);
+    g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
+    client.run();
+
+    WSACleanup();
     return 0;
 }

@@ -249,7 +249,8 @@ void UpdateClientList() {
             ListView_SetItemText(g_hClientList, itemIndex, 2, resolution);
             
             // Add status
-            ListView_SetItemText(g_hClientList, itemIndex, 3, client.is_connected ? "Connected" : "Idle");
+            ListView_SetItemText(g_hClientList, itemIndex, 3,
+                                const_cast<char*>(client.is_connected ? "Connected" : "Idle"));
         }
     }
 }
@@ -544,11 +545,11 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         InitCommonControls();
         
         // Create refresh button
-        CreateWindowW(L"BUTTON", L"Refresh", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
+        CreateWindowA("BUTTON", "Refresh", WS_VISIBLE | WS_CHILD | BS_PUSHBUTTON,
                      10, 10, 80, 30, hwnd, (HMENU)ID_REFRESH_BTN, g_hInstance, nullptr);
         
         // Create client list view
-        g_hClientList = CreateWindowW(WC_LISTVIEW, L"", 
+        g_hClientList = CreateWindowA(WC_LISTVIEW, "",
                                      WS_VISIBLE | WS_CHILD | WS_BORDER | LVS_REPORT | LVS_SINGLESEL,
                                      10, 50, 600, 300, hwnd, (HMENU)ID_CLIENT_LIST, g_hInstance, nullptr);
         
@@ -556,22 +557,22 @@ LRESULT CALLBACK MainWindowProc(HWND hwnd, UINT uMsg, WPARAM wParam, LPARAM lPar
         LVCOLUMNA col = {0};
         col.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_SUBITEM;
         
-        col.pszText = "Client IP";
+        col.pszText = const_cast<char*>("Client IP");
         col.cx = 120;
         col.iSubItem = 0;
         ListView_InsertColumn(g_hClientList, 0, &col);
         
-        col.pszText = "Session ID";
+        col.pszText = const_cast<char*>("Session ID");
         col.cx = 140;
         col.iSubItem = 1;
         ListView_InsertColumn(g_hClientList, 1, &col);
         
-        col.pszText = "Resolution";
+        col.pszText = const_cast<char*>("Resolution");
         col.cx = 100;
         col.iSubItem = 2;
         ListView_InsertColumn(g_hClientList, 2, &col);
         
-        col.pszText = "Status";
+        col.pszText = const_cast<char*>("Status");
         col.cx = 80;
         col.iSubItem = 3;
         ListView_InsertColumn(g_hClientList, 3, &col);
