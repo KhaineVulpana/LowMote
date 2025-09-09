@@ -77,8 +77,8 @@ test-build: all
 	@echo "Server: $(SERVER_EXE)"
 	@echo ""
 	@echo "Usage:"
-	@echo "  1. Start server: ./$(SERVER_EXE) [port]"
-	@echo "  2. Connect client: ./$(CLIENT_EXE) <server_ip> <port>"
+        @echo "  1. Start server: ./$(SERVER_EXE)"
+        @echo "  2. Connect client: ./$(CLIENT_EXE) <server_ip> [port]"
 	@echo ""
 
 # Help target
