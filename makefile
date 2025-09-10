@@ -2,27 +2,33 @@
 # Cross-platform build system for Windows and Linux
 
 # Compiler settings
-CXX = g++
+CXX ?= g++
 CXXFLAGS = -std=c++17 -O2 -Wall
 
-# Detect operating system
-ifeq ($(OS),Windows_NT)
-    TARGET_OS = Windows
+# Detect operating system (allow override with TARGET_OS)
+ifeq ($(TARGET_OS),)
+    ifeq ($(OS),Windows_NT)
+        TARGET_OS := Windows
+    else
+        TARGET_OS := Linux
+    endif
+endif
+
+ifeq ($(TARGET_OS),Windows)
     CLIENT_EXE = client.exe
     SERVER_EXE = server.exe
     CLIENT_LIBS = -lws2_32 -ld3d11 -ldxgi -lntdll -lgdi32 -luser32 -liphlpapi -static
     SERVER_LIBS = -lws2_32 -lgdi32 -luser32 -lcomctl32 -static
     DEFINES = -DWIN32_LEAN_AND_MEAN
-else
-    UNAME_S := $(shell uname -s)
-    ifeq ($(UNAME_S),Linux)
-        TARGET_OS = Linux
-        CLIENT_EXE = client
-        SERVER_EXE = server
-        CLIENT_LIBS = -pthread
-        SERVER_LIBS = -pthread -lX11
-        DEFINES =
+    ifneq ($(OS),Windows_NT)
+        CXX := x86_64-w64-mingw32-g++
     endif
+else
+    CLIENT_EXE = client
+    SERVER_EXE = server
+    CLIENT_LIBS = -pthread
+    SERVER_LIBS = -pthread -lX11
+    DEFINES =
 endif
 
 # Source files
