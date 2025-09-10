@@ -13,8 +13,20 @@
 #include <cstdint>
 #include <wchar.h>
 
+// Log file for capturing debug output when the console is hidden
+static std::ofstream g_debug_log("client-debug.log", std::ios::app);
+
 #ifndef DEBUG_LOG
-#define DEBUG_LOG(msg) std::cerr << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl
+#define DEBUG_LOG(msg) do {                                                     \
+    std::ostringstream _debug_ss;                                              \
+    _debug_ss << "[DEBUG] " << msg << " (" << __FUNCTION__                    \
+              << ":" << __LINE__ << ")";                                      \
+    std::cerr << _debug_ss.str() << std::endl;                                 \
+    if (g_debug_log.is_open()) {                                               \
+        g_debug_log << _debug_ss.str() << std::endl;                           \
+        g_debug_log.flush();                                                   \
+    }                                                                          \
+} while (0)
 #endif
 
 #include <windows.h>
