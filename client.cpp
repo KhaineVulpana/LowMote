@@ -1061,7 +1061,6 @@ int main(int argc, char* argv[]) {
     }
 
     LoadServiceConfig();
-
     std::string host = g_config.server_host;
     if (host.empty()) {
         host = PromptForServerIP();
