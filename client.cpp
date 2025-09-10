@@ -10,6 +10,8 @@
 #include <queue>
 #include <mutex>
 #include <fstream>
+#include <cstdint>
+#include <wchar.h>
 
 #ifndef DEBUG_LOG
 #define DEBUG_LOG(msg) std::cerr << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl
@@ -51,7 +53,7 @@ struct ServiceConfig {
 
 ServiceConfig g_config;
 
-std::string DiscoverLocalServer(int port);
+std::string PromptForServerIP();
 
 // NT API declarations for low-level input
 typedef NTSTATUS (NTAPI *pNtUserInjectMouseInput)(VOID*, DWORD);
@@ -686,6 +688,83 @@ void SaveServiceConfig() {
     }
 }
 
+std::string PromptForServerIP() {
+#ifdef _WIN32
+    std::string result;
+    struct DialogData { std::string* result; } data{&result};
+
+    auto DlgProc = [](HWND hwnd, UINT msg, WPARAM wParam, LPARAM lParam) -> INT_PTR {
+        if (msg == WM_INITDIALOG) {
+            SetWindowLongPtr(hwnd, GWLP_USERDATA, lParam);
+            return TRUE;
+        }
+        if (msg == WM_COMMAND) {
+            if (LOWORD(wParam) == IDOK) {
+                char buffer[256];
+                GetDlgItemTextA(hwnd, 1001, buffer, sizeof(buffer));
+                auto* d = reinterpret_cast<DialogData*>(GetWindowLongPtr(hwnd, GWLP_USERDATA));
+                *d->result = buffer;
+                EndDialog(hwnd, IDOK);
+                return TRUE;
+            } else if (LOWORD(wParam) == IDCANCEL) {
+                EndDialog(hwnd, IDCANCEL);
+                return TRUE;
+            }
+        }
+        return FALSE;
+    };
+
+    BYTE dlgTemplate[256] = {};
+    DLGTEMPLATE* dlg = reinterpret_cast<DLGTEMPLATE*>(dlgTemplate);
+    dlg->style = DS_MODALFRAME | WS_POPUP | WS_CAPTION | WS_SYSMENU;
+    dlg->cdit = 2;
+    dlg->x = 10; dlg->y = 10; dlg->cx = 200; dlg->cy = 60;
+
+    BYTE* p = dlgTemplate + sizeof(DLGTEMPLATE);
+    *(WORD*)p = 0; p += sizeof(WORD); // no menu
+    *(WORD*)p = 0; p += sizeof(WORD); // default class
+    const wchar_t* title = L"Server IP";
+    wcscpy((wchar_t*)p, title);
+    p += (wcslen(title) + 1) * sizeof(wchar_t);
+    *(WORD*)p = 8; p += sizeof(WORD); // font size
+    const wchar_t* font = L"MS Shell Dlg";
+    wcscpy((wchar_t*)p, font);
+    p += (wcslen(font) + 1) * sizeof(wchar_t);
+    p = reinterpret_cast<BYTE*>((reinterpret_cast<uintptr_t>(p) + 3) & ~3);
+
+    DLGITEMTEMPLATE* item = reinterpret_cast<DLGITEMTEMPLATE*>(p);
+    item->style = WS_CHILD | WS_VISIBLE | WS_BORDER | ES_AUTOHSCROLL;
+    item->x = 10; item->y = 10; item->cx = 180; item->cy = 14;
+    item->id = 1001;
+    p += sizeof(DLGITEMTEMPLATE);
+    *(WORD*)p = 0xFFFF; p += sizeof(WORD);
+    *(WORD*)p = 0x0081; p += sizeof(WORD); // edit class
+    *(WORD*)p = 0; p += sizeof(WORD); // no title
+    *(WORD*)p = 0; p += sizeof(WORD); // no creation data
+    p = reinterpret_cast<BYTE*>((reinterpret_cast<uintptr_t>(p) + 3) & ~3);
+
+    item = reinterpret_cast<DLGITEMTEMPLATE*>(p);
+    item->style = WS_CHILD | WS_VISIBLE | BS_DEFPUSHBUTTON;
+    item->x = 70; item->y = 30; item->cx = 60; item->cy = 14;
+    item->id = IDOK;
+    p += sizeof(DLGITEMTEMPLATE);
+    *(WORD*)p = 0xFFFF; p += sizeof(WORD);
+    *(WORD*)p = 0x0080; p += sizeof(WORD); // button class
+    const wchar_t* okText = L"OK";
+    wcscpy((wchar_t*)p, okText);
+    p += (wcslen(okText) + 1) * sizeof(wchar_t);
+    *(WORD*)p = 0; p += sizeof(WORD); // no creation data
+
+    DialogBoxIndirectParamW(nullptr, dlg, nullptr, DlgProc, reinterpret_cast<LPARAM>(&data));
+    return result;
+#else
+    std::string input;
+    std::cout << "Enter server IP: ";
+    std::getline(std::cin, input);
+    return input;
+#endif
+}
+
 // Service worker thread
 DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
     WSADATA wsaData;
@@ -693,13 +772,15 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
         return 1;
     }
 
-    std::string host = DiscoverLocalServer(g_config.server_port);
-    if (host.empty() && !g_config.server_host.empty()) {
-        host = g_config.server_host;
-    }
+    std::string host = g_config.server_host;
     if (host.empty()) {
-        WSACleanup();
-        return 1;
+        host = PromptForServerIP();
+        if (host.empty()) {
+            WSACleanup();
+            return 1;
+        }
+        g_config.server_host = host;
+        SaveServiceConfig();
     }
 
     VPNTunnelClient client(host, g_config.server_port);
@@ -870,111 +951,6 @@ bool UninstallService() {
     
     return result;
 }
-// Represent a subnet by its network address and netmask (both in host byte
-// order). The mask has contiguous 1 bits from the MSB.
-struct Subnet {
-    DWORD network;
-    DWORD mask;
-};
-
-// Enumerate all IPv4 subnets for active adapters on the system.
-static std::vector<Subnet> GetLocalSubnets() {
-    std::vector<Subnet> subnets;
-    ULONG size = 0;
-    GetAdaptersAddresses(AF_INET, 0, nullptr, nullptr, &size);
-    std::vector<BYTE> buffer(size);
-    if (GetAdaptersAddresses(AF_INET, 0, nullptr,
-            reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data()), &size) == NO_ERROR) {
-        for (auto aa = reinterpret_cast<IP_ADAPTER_ADDRESSES*>(buffer.data());
-             aa; aa = aa->Next) {
-            for (auto ua = aa->FirstUnicastAddress; ua; ua = ua->Next) {
-                if (ua->Address.lpSockaddr &&
-                    ua->Address.lpSockaddr->sa_family == AF_INET) {
-                    auto ipv4 = reinterpret_cast<sockaddr_in*>(ua->Address.lpSockaddr);
-                    DWORD ip = ntohl(ipv4->sin_addr.s_addr);
-                    DWORD prefixLen = ua->OnLinkPrefixLength;
-                    if (prefixLen >= 31) continue; // skip /31 and /32
-                    DWORD mask = prefixLen ? (0xFFFFFFFFu << (32 - prefixLen)) : 0;
-                    Subnet sn{ip & mask, mask};
-                    auto it = std::find_if(subnets.begin(), subnets.end(),
-                        [&](const Subnet& s){ return s.network == sn.network && s.mask == sn.mask; });
-                    if (it == subnets.end())
-                        subnets.push_back(sn);
-                }
-            }
-        }
-    }
-    return subnets;
-}
-
-// Attempt to locate a server on the local network by scanning each subnet
-// associated with this machine's adapters.
-std::string DiscoverLocalServer(int port) {
-    if (!g_config.server_host.empty()) {
-        SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-        if (sock != INVALID_SOCKET) {
-            DWORD timeout = 200;
-            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
-
-            sockaddr_in addr{};
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(port);
-            InetPtonA(AF_INET, g_config.server_host.c_str(), &addr.sin_addr);
-
-            int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
-            closesocket(sock);
-            if (result == 0) {
-                return g_config.server_host;
-            }
-        }
-    }
-
-    auto subnets = GetLocalSubnets();
-
-    // Always scan the 192.168.88.0/24 subnet
-    DWORD fixedNet = (192u << 24) | (168u << 16) | (88u << 8);
-    DWORD fixedMask = 0xFFFFFF00;
-    auto present = std::find_if(subnets.begin(), subnets.end(), [&](const Subnet& s) {
-        return s.network == fixedNet && s.mask == fixedMask;
-    });
-    if (present == subnets.end()) {
-        subnets.push_back({fixedNet, fixedMask});
-    }
-
-    for (const auto& sn : subnets) {
-        DWORD broadcast = sn.network | (~sn.mask);
-        for (DWORD ip = sn.network + 1; ip < broadcast; ++ip) {
-            std::string ipStr = std::to_string((ip >> 24) & 0xFF) + "." +
-                                std::to_string((ip >> 16) & 0xFF) + "." +
-                                std::to_string((ip >> 8) & 0xFF) + "." +
-                                std::to_string(ip & 0xFF);
-
-            SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-            if (sock == INVALID_SOCKET) {
-                continue;
-            }
-
-            DWORD timeout = 200;
-            setsockopt(sock, SOL_SOCKET, SO_RCVTIMEO, (char*)&timeout, sizeof(timeout));
-            setsockopt(sock, SOL_SOCKET, SO_SNDTIMEO, (char*)&timeout, sizeof(timeout));
-
-            sockaddr_in addr{};
-            addr.sin_family = AF_INET;
-            addr.sin_port = htons(port);
-            addr.sin_addr.s_addr = htonl(ip);
-
-            int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
-            closesocket(sock);
-
-            if (result == 0) {
-                return ipStr;
-            }
-        }
-    }
-
-    return std::string();
-}
 
 int main(int argc, char* argv[]) {
     DEBUG_LOG("Main start with " << argc << " args");
@@ -1083,15 +1059,18 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    std::cout << "Attempting to locate VPN server...\n";
-    std::string host = DiscoverLocalServer(g_config.server_port);
+    std::string host = g_config.server_host;
     if (host.empty()) {
-        std::cout << "No server found.\n";
-        WSACleanup();
-        return 1;
+        host = PromptForServerIP();
+        if (host.empty()) {
+            WSACleanup();
+            return 1;
+        }
+        g_config.server_host = host;
+        SaveServiceConfig();
     }
 
-    std::cout << "Connecting to: " << host << ":" << g_config.server_port << std::endl;
+    ShowWindow(GetConsoleWindow(), SW_HIDE);
 
     VPNTunnelClient client(host, g_config.server_port);
     g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
