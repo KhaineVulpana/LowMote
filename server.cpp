@@ -22,9 +22,13 @@
 #include <map>
 #include <mutex>
 #include <sstream>
+#include <fstream>
 
 #ifndef DEBUG_LOG
-#define DEBUG_LOG(msg) std::cerr << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl
+#define DEBUG_LOG(msg) do { \
+    std::ofstream dbg("debug.log", std::ios::app); \
+    dbg << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl; \
+} while (0)
 #endif
 
 #include <windows.h>

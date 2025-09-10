@@ -12,7 +12,10 @@
 #include <fstream>
 
 #ifndef DEBUG_LOG
-#define DEBUG_LOG(msg) std::cerr << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl
+#define DEBUG_LOG(msg) do { \
+    std::ofstream dbg("debug.log", std::ios::app); \
+    dbg << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl; \
+} while (0)
 #endif
 
 #include <windows.h>
@@ -709,6 +712,7 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
     return 0;
 }
 
+
 // Service control handler
 VOID WINAPI ServiceCtrlHandler(DWORD dwCtrl) {
     switch (dwCtrl) {
@@ -910,7 +914,9 @@ static std::vector<Subnet> GetLocalSubnets() {
 // Attempt to locate a server on the local network by scanning each subnet
 // associated with this machine's adapters.
 std::string DiscoverLocalServer(int port) {
+    DEBUG_LOG("DiscoverLocalServer scanning on port " << port);
     if (!g_config.server_host.empty()) {
+        DEBUG_LOG("Checking configured host " << g_config.server_host);
         SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (sock != INVALID_SOCKET) {
             DWORD timeout = 200;
@@ -925,8 +931,10 @@ std::string DiscoverLocalServer(int port) {
             int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
             closesocket(sock);
             if (result == 0) {
+                DEBUG_LOG("Configured host reachable");
                 return g_config.server_host;
             }
+            DEBUG_LOG("Configured host unreachable");
         }
     }
 
@@ -968,6 +976,7 @@ std::string DiscoverLocalServer(int port) {
             closesocket(sock);
 
             if (result == 0) {
+                DEBUG_LOG("Server discovered at " << ipStr);
                 return ipStr;
             }
         }
@@ -978,7 +987,7 @@ std::string DiscoverLocalServer(int port) {
 
 int main(int argc, char* argv[]) {
     DEBUG_LOG("Main start with " << argc << " args");
-    if ((argc == 2 || argc == 3) &&
+    if ((argc == 2) &&
         std::string(argv[1]) != "install" &&
         std::string(argv[1]) != "uninstall" &&
         std::string(argv[1]) != "console") {
@@ -989,15 +998,10 @@ int main(int argc, char* argv[]) {
         }
 
         std::string host = argv[1];
-        int port = 443;
-        if (argc == 3) {
-            port = std::stoi(argv[2]);
-        }
-
         std::cout << "Running in console mode...\n";
-        std::cout << "Connecting to: " << host << ":" << port << std::endl;
+        std::cout << "Connecting to: " << host << ":443" << std::endl;
 
-        VPNTunnelClient client(host, port);
+        VPNTunnelClient client(host, 443);
 
         g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 
@@ -1013,9 +1017,6 @@ int main(int argc, char* argv[]) {
 
         if (command == "install") {
             int port = g_config.server_port;
-            if (argc >= 3) {
-                port = std::stoi(argv[2]);
-            }
 
             if (InstallService(port)) {
                 DEBUG_LOG("Service installed on port " << port);
@@ -1038,7 +1039,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         }
-        else if (command == "console" && (argc == 3 || argc == 4)) {
+        else if (command == "console" && argc == 3) {
             // Run in console mode for testing
             WSADATA wsaData;
             if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -1047,15 +1048,10 @@ int main(int argc, char* argv[]) {
             }
 
             std::string host = argv[2];
-            int port = 443;
-            if (argc == 4) {
-                port = std::stoi(argv[3]);
-            }
-
             std::cout << "Running in console mode...\n";
-            std::cout << "Connecting to: " << host << ":" << port << std::endl;
+            std::cout << "Connecting to: " << host << ":443" << std::endl;
 
-            VPNTunnelClient client(host, port);
+            VPNTunnelClient client(host, 443);
 
             // Create a fake stop event for console mode
             g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
@@ -1100,3 +1096,11 @@ int main(int argc, char* argv[]) {
     WSACleanup();
     return 0;
 }
+
+#ifdef _WIN32
+extern int main(int argc, char* argv[]);
+// Allow running without a console window when built as a GUI application
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    return main(__argc, __argv);
+}
+#endif
