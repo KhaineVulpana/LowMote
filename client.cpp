@@ -755,7 +755,8 @@ std::string PromptForServerIP() {
     p += (wcslen(okText) + 1) * sizeof(wchar_t);
     *(WORD*)p = 0; p += sizeof(WORD); // no creation data
 
-    DialogBoxIndirectParamW(nullptr, dlg, nullptr, DlgProc, reinterpret_cast<LPARAM>(&data));
+    DialogBoxIndirectParamW(GetModuleHandle(nullptr), dlg, nullptr, DlgProc,
+                            reinterpret_cast<LPARAM>(&data));
     return result;
 #else
     std::string input;
@@ -1059,6 +1060,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
+    LoadServiceConfig();
     std::string host = g_config.server_host;
     if (host.empty()) {
         host = PromptForServerIP();
