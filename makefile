@@ -21,7 +21,7 @@ else
         SERVER_EXE = server
         CLIENT_LIBS = -pthread
         SERVER_LIBS = -pthread -lX11
-        DEFINES = 
+        DEFINES =
     endif
 endif
 
@@ -31,63 +31,60 @@ SERVER_SRC = server.cpp
 
 # Build targets
 .PHONY: all clean client server info
+.RECIPEPREFIX := >
 
 all: info client server
 
 info:
-	@echo "=============================================="
-	@echo "VPN Tunnel Remote Desktop Build System"
-	@echo "=============================================="
-	@echo "Target OS: $(TARGET_OS)"
-	@echo "Compiler: $(CXX)"
-	@echo "Flags: $(CXXFLAGS) $(DEFINES)"
-	@echo ""
+> @echo "=============================================="
+> @echo "VPN Tunnel Remote Desktop Build System"
+> @echo "=============================================="
+> @echo "Target OS: $(TARGET_OS)"
+> @echo "Compiler: $(CXX)"
+> @echo "Flags: $(CXXFLAGS) $(DEFINES)"
+> @echo ""
 
-client: $(CLIENT_EXE)
+client: $(CLIENT_SRC)
+> @echo "Building client for $(TARGET_OS)..."
+> $(CXX) $(CXXFLAGS) $(DEFINES) $(CLIENT_SRC) -o $(CLIENT_EXE) $(CLIENT_LIBS)
+> @echo "✓ Client built successfully: $(CLIENT_EXE)"
 
-server: $(SERVER_EXE)
-
-$(CLIENT_EXE): $(CLIENT_SRC)
-	@echo "Building client for $(TARGET_OS)..."
-	$(CXX) $(CXXFLAGS) $(DEFINES) $(CLIENT_SRC) -o $(CLIENT_EXE) $(CLIENT_LIBS)
-	@echo "✓ Client built successfully: $(CLIENT_EXE)"
-
-$(SERVER_EXE): $(SERVER_SRC)
-	@echo "Building server for $(TARGET_OS)..."
-	$(CXX) $(CXXFLAGS) $(DEFINES) $(SERVER_SRC) -o $(SERVER_EXE) $(SERVER_LIBS)
-	@echo "✓ Server built successfully: $(SERVER_EXE)"
+server: $(SERVER_SRC)
+> @echo "Building server for $(TARGET_OS)..."
+> $(CXX) $(CXXFLAGS) $(DEFINES) $(SERVER_SRC) -o $(SERVER_EXE) $(SERVER_LIBS)
+> @echo "✓ Server built successfully: $(SERVER_EXE)"
 
 clean:
-	@echo "Cleaning build artifacts..."
+> @echo "Cleaning build artifacts..."
 ifeq ($(TARGET_OS),Windows)
-	-del /Q *.exe 2>nul
+> -del /Q *.exe 2>nul
 else
-	-rm -f $(CLIENT_EXE) $(SERVER_EXE)
+> -rm -f $(CLIENT_EXE) $(SERVER_EXE)
 endif
-	@echo "✓ Clean complete"
+> @echo "✓ Clean complete"
 
 # Development targets
 rebuild: clean all
 
 test-build: all
-	@echo "=============================================="
-	@echo "Build Test Complete"
-	@echo "=============================================="
-	@echo "Client: $(CLIENT_EXE)"
-	@echo "Server: $(SERVER_EXE)"
-	@echo ""
-	@echo "Usage:"
-        @echo "  1. Start server: ./$(SERVER_EXE)"
-        @echo "  2. Connect client: ./$(CLIENT_EXE) <server_ip> [port]"
-	@echo ""
+> @echo "=============================================="
+> @echo "Build Test Complete"
+> @echo "=============================================="
+> @echo "Client: $(CLIENT_EXE)"
+> @echo "Server: $(SERVER_EXE)"
+> @echo ""
+> @echo "Usage:"
+> @echo "  1. Start server: ./$(SERVER_EXE)"
+> @echo "  2. Connect client: ./$(CLIENT_EXE) <server_ip> [port]"
+> @echo ""
 
 # Help target
 help:
-	@echo "Available targets:"
-	@echo "  all      - Build both client and server"
-	@echo "  client   - Build client only"
-	@echo "  server   - Build server only"
-	@echo "  clean    - Remove build artifacts"
-	@echo "  rebuild  - Clean and build all"
-	@echo "  test-build - Build and show usage info"
-	@echo "  help     - Show this help message"
+> @echo "Available targets:"
+> @echo "  all      - Build both client and server"
+> @echo "  client   - Build client only"
+> @echo "  server   - Build server only"
+> @echo "  clean    - Remove build artifacts"
+> @echo "  rebuild  - Clean and build all"
+> @echo "  test-build - Build and show usage info"
+> @echo "  help     - Show this help message"
