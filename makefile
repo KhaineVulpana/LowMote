@@ -2,7 +2,9 @@
 # Cross-platform build system for Windows and Linux
 
 # Compiler settings
-CXX = g++
+OS ?= Windows_NT
+HOST_OS := $(shell uname -s)
+CXX ?= g++
 CXXFLAGS = -std=c++17 -O2 -Wall
 
 # Detect operating system
@@ -13,6 +15,8 @@ ifeq ($(OS),Windows_NT)
     CLIENT_LIBS = -lws2_32 -ld3d11 -ldxgi -lntdll -lgdi32 -luser32 -liphlpapi -static
     SERVER_LIBS = -lws2_32 -lgdi32 -luser32 -lcomctl32 -static
     DEFINES = -DWIN32_LEAN_AND_MEAN
+    CXX := x86_64-w64-mingw32-g++
+    CXXFLAGS += -mwindows
 else
     UNAME_S := $(shell uname -s)
     ifeq ($(UNAME_S),Linux)
@@ -59,27 +63,15 @@ $(SERVER_EXE): $(SERVER_SRC)
 
 clean:
 	@echo "Cleaning build artifacts..."
-ifeq ($(TARGET_OS),Windows)
-	-del /Q *.exe 2>nul
-else
+ifneq ($(HOST_OS),Windows_NT)
 	-rm -f $(CLIENT_EXE) $(SERVER_EXE)
+else
+	-del /Q *.exe 2>nul
 endif
 	@echo "✓ Clean complete"
 
 # Development targets
 rebuild: clean all
-
-test-build: all
-	@echo "=============================================="
-	@echo "Build Test Complete"
-	@echo "=============================================="
-	@echo "Client: $(CLIENT_EXE)"
-	@echo "Server: $(SERVER_EXE)"
-	@echo ""
-	@echo "Usage:"
-	@echo "  1. Start server: ./$(SERVER_EXE) [port]"
-	@echo "  2. Connect client: ./$(CLIENT_EXE) <server_ip> <port>"
-	@echo ""
 
 # Help target
 help:
@@ -91,3 +83,15 @@ help:
 	@echo "  rebuild  - Clean and build all"
 	@echo "  test-build - Build and show usage info"
 	@echo "  help     - Show this help message"
+
+test-build: all
+	@echo "=============================================="
+	@echo "Build Test Complete"
+	@echo "=============================================="
+	@echo "Client: $(CLIENT_EXE)"
+	@echo "Server: $(SERVER_EXE)"
+	@echo ""
+	@echo "Usage:"
+	@echo "  1. Start server: ./$(SERVER_EXE)"
+	@echo "  2. Client auto-discovers server on port 443"
+	@echo ""

